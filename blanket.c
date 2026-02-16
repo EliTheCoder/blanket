@@ -3,23 +3,33 @@
 #include <stdarg.h>
 #include <stdlib.h>
 
-typedef struct {
-    long value;
-} IntLit;
+typedef enum {
+    EXPR_NUMBER,
+    EXPR_IDENT,
+    EXPR_ADD,
+} ExpressionKind;
 
-typedef struct Add {
-    IntLit *intlit;
-    struct Add *expression;
-} Add;
+typedef struct Expression {
+    ExpressionKind kind;
+
+    union {
+        long number;
+        char *ident;
+        struct {
+            struct Expression *left;
+            struct Expression *right;
+        } add;
+    } as;
+} Expression;
 
 typedef struct {
     char *name;
-    Add *expression;
+    Expression *expression;
 } Declaration;
 
 typedef struct {
-    char *function_name;
-    Add **arguments;
+    char *name;
+    Expression **arguments;
     size_t argument_count;
 } FunctionCall;
 
@@ -52,21 +62,23 @@ void p(Emitter *e, const char *fmt, ...) {
     e->head += n + 1;
 }
 
-void emit_intlit(Emitter *e, IntLit *intlit) {
-    p(e, "push %ld", intlit->value);
-}
-
-void emit_expression(Emitter *e, Add *expression) {
-    emit_intlit(e, expression->intlit);
-
-    if (expression->expression == NULL) return;
-
-    emit_expression(e, expression->expression);
-
-    p(e, "pop rbx");
-    p(e, "pop rax");
-    p(e, "add rax, rbx");
-    p(e, "push rax");
+void emit_expression(Emitter *e, Expression *expression) {
+    switch (expression->kind) {
+        case EXPR_NUMBER:
+            p(e, "push %ld", expression->as.number);
+            break;
+        case EXPR_IDENT:
+            p(e, "push %s", expression->as.ident);
+            break;
+        case EXPR_ADD:
+            emit_expression(e, expression->as.add.left);
+            emit_expression(e, expression->as.add.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "add rax, rbx");
+            p(e, "push rax");
+            break;
+    }
 }
 
 void emit_declaration(Emitter *e, Declaration *declaration) {
@@ -86,7 +98,7 @@ void emit_function_call(Emitter *e, FunctionCall *function_call) {
         p(e, "pop %s", call_registers[i]);
     }
 
-    p(e, "call %s", function_call->function_name);
+    p(e, "call %s", function_call->name);
 }
 
 void emit(Emitter *e, Statement **ast, size_t statement_count) {
@@ -111,52 +123,197 @@ void emit(Emitter *e, Statement **ast, size_t statement_count) {
                 emit_function_call(e, s->as.function_call);
                 break;
             default:
-                fprintf(stderr, "some shit not implemented");
+                fprintf(stderr, "Expected declaration or function call\n");
                 exit(1);
                 break;
         }
     }
 }
 
+typedef enum {
+    T_EOF,
+    T_LET,
+    T_IDENT,
+    T_EQUALS,
+    T_INTLIT,
+    T_PLUS,
+    T_SEMICOLON,
+    T_NEWLINE,
+    T_LPAREN,
+    T_RPAREN,
+    T_COMMA,
+} TokenKind;
+
+typedef struct {
+    TokenKind kind;
+    union {
+        long l;
+        char *s;
+    } value;
+} Token;
+
+typedef struct {
+    Token *cursor;
+    Token *end;
+} Parser;
+
+Token peek(Parser *p) {
+    if (p->cursor >= p->end) return (Token){T_EOF, {0}};
+    return *p->cursor;
+}
+
+Token next(Parser *p) {
+    Token t = peek(p);
+    p->cursor++;
+    return t;
+}
+
+Token require(Parser *p, TokenKind token_kind) {
+    Token t = next(p);
+    if (t.kind != token_kind) {
+        fprintf(stderr, "Expected token kind %d, found %d\n", token_kind, t.kind);
+        exit(1);
+    }
+    return t;
+}
+
+Expression *parse_factor(Parser *p) {
+    Expression *expr = malloc(sizeof(Expression));
+
+    Token t = next(p);
+    switch (t.kind) {
+        case T_INTLIT:
+            expr->kind = EXPR_NUMBER;
+            expr->as.number = t.value.l;
+            break;
+        case T_IDENT:
+            expr->kind = EXPR_IDENT;
+            expr->as.ident = t.value.s;
+            break;
+        default:
+            fprintf(stderr, "Unexpected token in factor\n");
+            exit(1);
+    }
+
+    return expr;
+}
+
+Expression *parse_expression(Parser *p) {
+    Expression *left = parse_factor(p);
+
+    while (peek(p).kind == T_PLUS) {
+        next(p);
+
+        Expression *right = parse_factor(p);
+
+        Expression *add = malloc(sizeof(Expression));
+
+        add->kind = EXPR_ADD;
+        add->as.add.left = left;
+        add->as.add.right = right;
+
+        left = add;
+    }
+
+    return left;
+}
+
+Declaration *parse_declaration(Parser *p) {
+    Declaration *decl = malloc(sizeof(Declaration));
+
+    require(p, T_LET);
+    Token name = require(p, T_IDENT);
+    require(p, T_EQUALS);
+    decl->name = name.value.s;
+    decl->expression = parse_expression(p);
+
+    return decl;
+}
+
+FunctionCall *parse_function_call(Parser *p) {
+    FunctionCall *call = malloc(sizeof(FunctionCall));
+
+    Token name = require(p, T_IDENT);
+    call->name = name.value.s;
+
+    require(p, T_LPAREN);
+
+    call->arguments = malloc(sizeof(Expression*) * 8);
+
+    size_t arg_count = 0;
+    while (peek(p).kind != T_RPAREN) {
+        call->arguments[arg_count] = parse_expression(p);
+        arg_count++;
+        if (peek(p).kind != T_RPAREN) require(p, T_COMMA);
+    }
+
+    call->argument_count = arg_count;
+
+    require(p, T_RPAREN);
+
+    return call;
+}
+
+Statement *parse_statement(Parser *p) {
+    Statement *s = malloc(sizeof(Statement));
+
+    switch (peek(p).kind) {
+        case T_LET:
+            s->kind = DECLARATION;
+            s->as.declaration = parse_declaration(p);
+            break;
+        case T_IDENT:
+            s->kind = FUNCTION_CALL;
+            s->as.function_call = parse_function_call(p);
+            break;
+        default:
+            fprintf(stderr, "Expected statement to be either declaration or function call");
+            exit(1);
+    }
+
+    for (Token x = peek(p); x.kind == T_NEWLINE || x.kind == T_SEMICOLON; x = peek(p))
+        next(p);
+
+    return s;
+}
+
+size_t parse(Statement **program, Parser *p) {
+    int i = 0;
+    while (peek(p).kind != T_EOF) {
+        *program++ = parse_statement(p);
+        i++;
+    }
+    return i;
+}
+
 int main(void) {
-    Statement *program[] = {
-        &(Statement){
-            .kind = DECLARATION,
-            .as = {
-                .declaration = &(Declaration){
-                    .name = "x",
-                    .expression = &(Add){
-                        .intlit = &(IntLit){ 34 },
-                        .expression = &(Add){
-                            .intlit = &(IntLit){ 35 },
-                            .expression = NULL
-                        }
-                    }
-                }
-            }
-        },
-        &(Statement){
-            .kind = FUNCTION_CALL,
-            .as = {
-                .function_call = &(FunctionCall){
-                    .function_name = "exit",
-                    .arguments = (Add*[]){
-                        &(Add){
-                            .intlit = &(IntLit){ 67 },
-                            .expression = NULL
-                        }
-                    },
-                    .argument_count = 1
-                }
-            }
-        }
+    Token code[] = {
+        {T_LET, {0}},
+        {T_IDENT, {.s = "x"}},
+        {T_EQUALS, {0}},
+        {T_INTLIT, {.l = 34}},
+        {T_PLUS, {0}},
+        {T_INTLIT, {.l = 35}},
+        {T_NEWLINE, {0}},
+        {T_IDENT, {.s = "exit"}},
+        {T_LPAREN, {0}},
+        {T_INTLIT, {.l = 34}},
+        {T_PLUS, {0}},
+        {T_INTLIT, {.l = 35}},
+        {T_RPAREN, {0}},
+        {T_SEMICOLON, {0}},
     };
+
+    Statement *program[100];
+
+    Parser p = {code, code+sizeof(code)/sizeof(code[0])};
+    size_t statement_count = parse(program, &p);
 
     char buffer[0x100000] = {0};
 
     Emitter e = {buffer, buffer};
 
-    emit( &e, program, 2 );
+    emit( &e, program, statement_count );
 
     printf("%s", buffer);
 }
