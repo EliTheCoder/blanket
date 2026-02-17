@@ -34,15 +34,21 @@ typedef struct {
     size_t argument_count;
 } FunctionCall;
 
+typedef struct {
+    char *name;
+} External;
+
 typedef enum {
     DECLARATION,
     FUNCTION_CALL,
+    EXTERNAL,
 } StatementKind;
 
 typedef struct {
     union {
         Declaration *declaration;
         FunctionCall *function_call;
+        External *external;
     } as;
     StatementKind kind;
 } Statement;
@@ -102,6 +108,10 @@ void emit_function_call(Emitter *e, FunctionCall *function_call) {
     p(e, "call %s", function_call->name);
 }
 
+void emit_external(Emitter *e, External *external) {
+    p(e, "extrn %s", external->name);
+}
+
 void emit(Emitter *e, Statement **ast, size_t statement_count) {
     FILE *header = fopen("./header.asm", "r");
     fseek(header, 0, SEEK_END);
@@ -123,8 +133,11 @@ void emit(Emitter *e, Statement **ast, size_t statement_count) {
             case FUNCTION_CALL:
                 emit_function_call(e, s->as.function_call);
                 break;
+            case EXTERNAL:
+                emit_external(e, s->as.external);
+                break;
             default:
-                fprintf(stderr, "Expected declaration or function call\n");
+                fprintf(stderr, "Expected statement\n");
                 exit(1);
                 break;
         }
@@ -143,6 +156,7 @@ typedef enum {
     T_LPAREN,
     T_RPAREN,
     T_COMMA,
+    T_EXTERN,
 } TokenKind;
 
 typedef struct {
@@ -255,6 +269,16 @@ FunctionCall *parse_function_call(Parser *p) {
     return call;
 }
 
+External *parse_external(Parser *p) {
+    External *ext = malloc(sizeof(External));
+
+    require(p, T_EXTERN);
+    Token name = require(p, T_IDENT);
+    ext->name = name.value.s;
+
+    return ext;
+}
+
 Statement *parse_statement(Parser *p) {
     Statement *s = malloc(sizeof(Statement));
 
@@ -267,8 +291,12 @@ Statement *parse_statement(Parser *p) {
             s->kind = FUNCTION_CALL;
             s->as.function_call = parse_function_call(p);
             break;
+        case T_EXTERN:
+            s->kind = EXTERNAL;
+            s->as.external = parse_external(p);
+            break;
         default:
-            fprintf(stderr, "Expected statement to be either declaration or function call");
+            fprintf(stderr, "Expected statement\n");
             exit(1);
     }
 
@@ -344,9 +372,8 @@ Token lex_token(Lexer *l) {
         token[i++] = l_next(l);
     }
 
-    if (strcmp(token, "let") == 0) {
-        return (Token){T_LET, {0}};
-    }
+    if (strcmp(token, "let") == 0) return (Token){T_LET, {0}};
+    if (strcmp(token, "extern") == 0) return (Token){T_EXTERN, {0}};
 
     return (Token){T_IDENT, { .s = token }};
 }
