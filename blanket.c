@@ -3,6 +3,8 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 typedef enum {
     EXPR_NUMBER,
@@ -409,6 +411,17 @@ size_t lex(Lexer *l, Token *tokens) {
     return i;
 }
 
+char *replace_ext(const char *filename, const char *new_extension) {
+    const char *dot = strrchr(filename, '.');
+    size_t len = dot ? (size_t)(dot - filename) : strlen(filename);
+
+    char *out = malloc(len + strlen(new_extension) + 1);
+    memcpy(out, filename, len);
+    strcpy(out + len, new_extension);
+
+    return out;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: ./blanket filename\n");
@@ -438,10 +451,32 @@ int main(int argc, char **argv) {
     Parser p = {tokens, tokens + token_count};
     size_t statement_count = parse(&p, program);
 
-    char buffer[0x100000] = {0};
+    char assembly[0x100000] = {0};
     char *symbols[0x100];
-    Emitter e = {buffer, buffer, symbols, 0};
+    Emitter e = {assembly, assembly, symbols, 0};
     emit(&e, program, statement_count);
 
-    printf("%s", buffer);
+    char *asm_filename = replace_ext(filename, ".asm");
+
+    FILE *asm_fp = fopen(asm_filename, "w");
+    fputs(assembly, asm_fp);
+    fclose(asm_fp);
+
+    char *object_filename = replace_ext(filename, ".o");
+
+    int fasm_process = fork();
+    if (fasm_process == 0) {
+        execlp("fasm2", "fasm2", "-n", asm_filename, object_filename, NULL);
+    }
+    waitpid(fasm_process, 0, 0);
+
+    char *out_filename = replace_ext(filename, "");
+
+    int clang_process = fork();
+    if (clang_process == 0) {
+        execlp("clang", "clang", "-no-pie", "-o", out_filename, object_filename, NULL);
+    }
+    waitpid(clang_process, 0, 0);
+
+    remove(object_filename);
 }
