@@ -362,8 +362,26 @@ size_t lex(Lexer *l, Token *tokens) {
     return i;
 }
 
-int main(void) {
-    char code[] = "let x = 34 + 35\nexit(34+35);";
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: ./blanket filename\n");
+        exit(1);
+    }
+
+    char *filename = argv[1];
+
+    FILE *fp = fopen(filename, "r");
+    if (fp == NULL) {
+        fprintf(stderr, "Could not open file %s\n", filename);
+        exit(1);
+    }
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    rewind(fp);
+
+    char *code = malloc(size*sizeof(char));
+    fread(code, 1, size, fp);
+    fclose(fp);
     
     Token tokens[0x1000];
     Lexer l = {code, code};
