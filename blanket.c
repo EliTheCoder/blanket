@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 typedef enum {
     EXPR_NUMBER,
@@ -277,43 +278,104 @@ Statement *parse_statement(Parser *p) {
     return s;
 }
 
-size_t parse(Statement **program, Parser *p) {
+size_t parse(Parser *p, Statement **program) {
     int i = 0;
     while (peek(p).kind != T_EOF) {
-        *program++ = parse_statement(p);
-        i++;
+        program[i++] = parse_statement(p);
     }
     return i;
 }
 
+typedef struct {
+    char *base;
+    char *head;
+} Lexer;
+
+char l_peek(Lexer *l) {
+    return *l->head;
+}
+
+char l_next(Lexer *l) {
+    char c = l_peek(l);
+    if (c != '\0') l->head++;
+    return c;
+}
+
+Token lex_token(Lexer *l) {
+    while (isspace(l_peek(l)) && l_peek(l) != '\n') l_next(l);
+
+    char c = l_next(l);
+
+    if (c == '\n') {
+        while (isspace(l_peek(l))) l_next(l);
+        return (Token){T_NEWLINE, {0}};
+    }
+    if (c == '=') return (Token){T_EQUALS, {0}};
+    if (c == '+') return (Token){T_PLUS, {0}};
+    if (c == ';') return (Token){T_SEMICOLON, {0}};
+    if (c == '(') return (Token){T_LPAREN, {0}};
+    if (c == ')') return (Token){T_RPAREN, {0}};
+    if (c == ',') return (Token){T_COMMA, {0}};
+
+    if (isdigit(c)) {
+        long number = c - '0';
+        while (isdigit(l_peek(l))) {
+            number *= 10;
+            number += l_next(l) - '0';
+        }
+        if (isalpha(l_peek(l))) {
+            fprintf(stderr, "Identifiers must not start with digits\n");
+            exit(1);
+        }
+        return (Token){T_INTLIT, { .l = number }};
+    }
+
+    if (!isalnum(c)) {
+        fprintf(stderr, "Unexpected character %c\n", c);
+        exit(1);
+    }
+
+    char *token = calloc(1, sizeof(char) * 0x100);
+
+    token[0] = c;
+
+    int i = 1;
+    while (isalnum(l_peek(l))) {
+        token[i++] = l_next(l);
+    }
+
+    if (strcmp(token, "let") == 0) {
+        return (Token){T_LET, {0}};
+    }
+
+    return (Token){T_IDENT, { .s = token }};
+}
+
+size_t lex(Lexer *l, Token *tokens) {
+    int i = 0;
+    while (l_peek(l) != '\0') {
+        tokens[i++] = lex_token(l);
+    }
+
+    tokens[i++] = (Token){T_EOF, {0}};
+
+    return i;
+}
+
 int main(void) {
-    Token code[] = {
-        {T_LET, {0}},
-        {T_IDENT, {.s = "x"}},
-        {T_EQUALS, {0}},
-        {T_INTLIT, {.l = 34}},
-        {T_PLUS, {0}},
-        {T_INTLIT, {.l = 35}},
-        {T_NEWLINE, {0}},
-        {T_IDENT, {.s = "exit"}},
-        {T_LPAREN, {0}},
-        {T_INTLIT, {.l = 34}},
-        {T_PLUS, {0}},
-        {T_INTLIT, {.l = 35}},
-        {T_RPAREN, {0}},
-        {T_SEMICOLON, {0}},
-    };
+    char code[] = "let x = 34 + 35\nexit(34+35);";
+    
+    Token tokens[0x1000];
+    Lexer l = {code, code};
+    size_t token_count = lex(&l, tokens);
 
     Statement *program[100];
-
-    Parser p = {code, code+sizeof(code)/sizeof(code[0])};
-    size_t statement_count = parse(program, &p);
+    Parser p = {tokens, tokens + token_count};
+    size_t statement_count = parse(&p, program);
 
     char buffer[0x100000] = {0};
-
     Emitter e = {buffer, buffer};
-
-    emit( &e, program, statement_count );
+    emit(&e, program, statement_count);
 
     printf("%s", buffer);
 }
