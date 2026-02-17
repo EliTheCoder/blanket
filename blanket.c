@@ -40,26 +40,38 @@ typedef struct {
     char *name;
 } External;
 
+typedef struct IfStatement IfStatement;
+typedef struct Statement Statement;
+
 typedef enum {
     DECLARATION,
     FUNCTION_CALL,
     EXTERNAL,
+    IF_STATEMENT,
 } StatementKind;
 
-typedef struct {
+typedef struct Statement {
     union {
         Declaration *declaration;
         FunctionCall *function_call;
         External *external;
+        IfStatement *if_statement;
     } as;
     StatementKind kind;
 } Statement;
+
+typedef struct IfStatement {
+    Expression *condition;
+    Statement **statements;
+    size_t statement_count;
+} IfStatement;
 
 typedef struct {
     char *base;
     char *head;
     char **symbols;
     size_t symbol_count;
+    int label_count;
 } Emitter;
 
 void p(Emitter *e, const char *fmt, ...) {
@@ -71,6 +83,12 @@ void p(Emitter *e, const char *fmt, ...) {
     memcpy(e->head, buf, n);
     e->head[n] = '\n';
     e->head += n + 1;
+}
+
+char *new_label(Emitter *e) {
+    char *label = malloc(sizeof(char) * 10);
+    snprintf(label, 10, "_L%d", e->label_count++);
+    return label;
 }
 
 int get_symbol(Emitter *e, const char *symbol) {
@@ -144,19 +162,24 @@ void emit_external(Emitter *e, External *external) {
     p(e, "extrn %s", external->name);
 }
 
-void emit(Emitter *e, Statement **ast, size_t statement_count) {
-    FILE *header = fopen("./header.asm", "r");
-    fseek(header, 0, SEEK_END);
-    long size = ftell(header);
-    rewind(header);
+void emit_statements(Emitter *e, Statement **statements, size_t statement_count);
 
-    fread(e->head, 1, size, header);
-    e->head += size;
+void emit_if_statement(Emitter *e, IfStatement *if_statement) {
+    char *label = new_label(e);
 
-    fclose(header);
+    emit_expression(e, if_statement->condition);
+    p(e, "pop rax");
+    p(e, "test rax, rax");
+    p(e, "jz %s", label);
 
+    emit_statements(e, if_statement->statements, if_statement->statement_count);
+
+    p(e, "%s:", label);
+}
+
+void emit_statements(Emitter *e, Statement **statements, size_t statement_count) {
     for (size_t i = 0; i < statement_count; i++) {
-        Statement *s = ast[i];
+        Statement *s = statements[i];
 
         switch (s->kind) {
             case DECLARATION:
@@ -168,12 +191,29 @@ void emit(Emitter *e, Statement **ast, size_t statement_count) {
             case EXTERNAL:
                 emit_external(e, s->as.external);
                 break;
+            case IF_STATEMENT:
+                emit_if_statement(e, s->as.if_statement);
+                break;
             default:
-                fprintf(stderr, "Expected statement\n");
+                fprintf(stderr, "Expected statement but found %d\n", s->kind);
                 exit(1);
                 break;
         }
     }
+}
+
+void emit(Emitter *e, Statement **ast, size_t statement_count) {
+    FILE *header = fopen("./header.asm", "r");
+    fseek(header, 0, SEEK_END);
+    long size = ftell(header);
+    rewind(header);
+
+    fread(e->head, 1, size, header);
+    e->head += size;
+
+    fclose(header);
+
+    emit_statements(e, ast, statement_count);
 }
 
 typedef enum {
@@ -189,6 +229,9 @@ typedef enum {
     T_RPAREN,
     T_COMMA,
     T_EXTERN,
+    T_IF,
+    T_LCURLY,
+    T_RCURLY,
 } TokenKind;
 
 typedef struct {
@@ -301,6 +344,25 @@ FunctionCall *parse_function_call(Parser *p) {
     return call;
 }
 
+size_t parse(Parser *p, Statement **program);
+
+IfStatement *parse_if_statement(Parser *p) {
+    IfStatement *ifs = malloc(sizeof(IfStatement));
+
+    require(p, T_IF);
+    ifs->condition = parse_expression(p);
+    require(p, T_LCURLY);
+    Statement **statements = malloc(sizeof(Statement*) * 100);
+    size_t statement_count = parse(p, statements);
+
+    ifs->statements = statements;
+    ifs->statement_count = statement_count;
+
+    require(p, T_RCURLY);
+
+    return ifs;
+}
+
 External *parse_external(Parser *p) {
     External *ext = malloc(sizeof(External));
 
@@ -313,6 +375,9 @@ External *parse_external(Parser *p) {
 
 Statement *parse_statement(Parser *p) {
     Statement *s = malloc(sizeof(Statement));
+
+    for (Token x = peek(p); x.kind == T_NEWLINE || x.kind == T_SEMICOLON; x = peek(p))
+        next(p);
 
     switch (peek(p).kind) {
         case T_LET:
@@ -327,8 +392,12 @@ Statement *parse_statement(Parser *p) {
             s->kind = EXTERNAL;
             s->as.external = parse_external(p);
             break;
+        case T_IF:
+            s->kind = IF_STATEMENT;
+            s->as.if_statement = parse_if_statement(p);
+            break;
         default:
-            fprintf(stderr, "Expected statement\n");
+            fprintf(stderr, "Expected statement but found %d\n", peek(p).kind);
             exit(1);
     }
 
@@ -340,7 +409,7 @@ Statement *parse_statement(Parser *p) {
 
 size_t parse(Parser *p, Statement **program) {
     int i = 0;
-    while (peek(p).kind != T_EOF) {
+    while (peek(p).kind != T_EOF && peek(p).kind != T_RCURLY) {
         program[i++] = parse_statement(p);
     }
     return i;
@@ -376,6 +445,8 @@ Token lex_token(Lexer *l) {
     if (c == '(') return (Token){T_LPAREN, {0}};
     if (c == ')') return (Token){T_RPAREN, {0}};
     if (c == ',') return (Token){T_COMMA, {0}};
+    if (c == '{') return (Token){T_LCURLY, {0}};
+    if (c == '}') return (Token){T_RCURLY, {0}};
 
     if (isdigit(c)) {
         long number = c - '0';
@@ -406,6 +477,7 @@ Token lex_token(Lexer *l) {
 
     if (strcmp(token, "let") == 0) return (Token){T_LET, {0}};
     if (strcmp(token, "extern") == 0) return (Token){T_EXTERN, {0}};
+    if (strcmp(token, "if") == 0) return (Token){T_IF, {0}};
 
     return (Token){T_IDENT, { .s = token }};
 }
@@ -463,7 +535,7 @@ int main(int argc, char **argv) {
 
     char assembly[0x100000] = {0};
     char *symbols[0x100];
-    Emitter e = {assembly, assembly, symbols, 0};
+    Emitter e = {assembly, assembly, symbols, 0, 0};
     emit(&e, program, statement_count);
 
     char *asm_filename = replace_ext(filename, ".asm");
