@@ -56,6 +56,8 @@ typedef struct {
 typedef struct {
     char *base;
     char *head;
+    char **symbols;
+    size_t symbol_count;
 } Emitter;
 
 void p(Emitter *e, const char *fmt, ...) {
@@ -69,13 +71,30 @@ void p(Emitter *e, const char *fmt, ...) {
     e->head += n + 1;
 }
 
+void push_symbol(Emitter *e, char *symbol) {
+    e->symbols[e->symbol_count++] = symbol;
+}
+
+int get_symbol(Emitter *e, const char *symbol) {
+    size_t i = 0;
+    while (i < e->symbol_count) {
+        if (strcmp(symbol, e->symbols[i]) == 0) break;
+        i++;
+    }
+    if (i >= e->symbol_count) {
+        fprintf(stderr, "Unknown symbol %s\n", symbol);
+        exit(1);
+    }
+    return (i + 1) * 8;
+}
+
 void emit_expression(Emitter *e, Expression *expression) {
     switch (expression->kind) {
         case EXPR_NUMBER:
             p(e, "push %ld", expression->as.number);
             break;
         case EXPR_IDENT:
-            p(e, "push %s", expression->as.ident);
+            p(e, "push [rbp-%d]", get_symbol(e, expression->as.ident));
             break;
         case EXPR_ADD:
             emit_expression(e, expression->as.add.left);
@@ -91,6 +110,7 @@ void emit_expression(Emitter *e, Expression *expression) {
 void emit_declaration(Emitter *e, Declaration *declaration) {
     p(e, "sub rsp, 8");
 
+    push_symbol(e, declaration->name);
     emit_expression(e, declaration->expression);
 
     p(e, "pop rax");
@@ -419,7 +439,8 @@ int main(int argc, char **argv) {
     size_t statement_count = parse(&p, program);
 
     char buffer[0x100000] = {0};
-    Emitter e = {buffer, buffer};
+    char *symbols[0x100];
+    Emitter e = {buffer, buffer, symbols, 0};
     emit(&e, program, statement_count);
 
     printf("%s", buffer);
