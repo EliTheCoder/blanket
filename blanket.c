@@ -73,10 +73,6 @@ void p(Emitter *e, const char *fmt, ...) {
     e->head += n + 1;
 }
 
-void push_symbol(Emitter *e, char *symbol) {
-    e->symbols[e->symbol_count++] = symbol;
-}
-
 int get_symbol(Emitter *e, const char *symbol) {
     size_t i = 0;
     while (i < e->symbol_count) {
@@ -84,10 +80,17 @@ int get_symbol(Emitter *e, const char *symbol) {
         i++;
     }
     if (i >= e->symbol_count) {
-        fprintf(stderr, "Unknown symbol %s\n", symbol);
-        exit(1);
+        return -1;
     }
     return (i + 1) * 8;
+}
+
+void push_symbol(Emitter *e, char *symbol) {
+    if (get_symbol(e, symbol) >= 0) {
+        fprintf(stderr, "Symbol %s already declared\n", symbol);
+        exit(1);
+    }
+    e->symbols[e->symbol_count++] = symbol;
 }
 
 void emit_expression(Emitter *e, Expression *expression) {
@@ -96,8 +99,15 @@ void emit_expression(Emitter *e, Expression *expression) {
             p(e, "push %ld", expression->as.number);
             break;
         case EXPR_IDENT:
-            p(e, "push [rbp-%d]", get_symbol(e, expression->as.ident));
-            break;
+            {
+                int symbol_offset = get_symbol(e, expression->as.ident);
+                if (symbol_offset < 0) {
+                    fprintf(stderr, "Undeclared symbol %s\n", expression->as.ident);
+                    exit(1);
+                }
+                p(e, "push [rbp-%d]", get_symbol(e, expression->as.ident));
+                break;
+            }
         case EXPR_ADD:
             emit_expression(e, expression->as.add.left);
             emit_expression(e, expression->as.add.right);
