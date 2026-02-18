@@ -349,7 +349,7 @@ mov rbp, rsp\n";
 
     emit_statements(e, ast, statement_count);
 
-    char footer[] = "leave\n";
+    char footer[] = "leave\nret\n";
 
     memcpy(e->head, footer, sizeof(footer)-1);
     e->head += sizeof(footer)-1;
