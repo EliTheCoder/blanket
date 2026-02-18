@@ -8,6 +8,7 @@
 
 typedef enum {
     EXPR_NUMBER,
+    EXPR_STRING,
     EXPR_IDENT,
     EXPR_ADD,
     EXPR_SUB,
@@ -22,6 +23,7 @@ typedef struct Expression {
     union {
         long number;
         char *ident;
+        char *string;
         struct {
             struct Expression *left;
             struct Expression *right;
@@ -108,7 +110,19 @@ typedef struct {
     char **symbols;
     size_t symbol_count;
     int label_count;
+    char **strings;
+    int string_count;
 } Emitter;
+
+void pn(Emitter *e, const char *fmt, ...) {
+    char buf[128];
+    va_list a;
+    va_start(a, fmt);
+    size_t n = vsnprintf(buf, sizeof(buf), fmt, a);
+    va_end(a);
+    memcpy(e->head, buf, n);
+    e->head += n;
+}
 
 void p(Emitter *e, const char *fmt, ...) {
     char buf[128];
@@ -124,6 +138,16 @@ void p(Emitter *e, const char *fmt, ...) {
 char *new_label(Emitter *e) {
     char *label = malloc(sizeof(char) * 10);
     snprintf(label, 10, "_L%d", e->label_count++);
+    return label;
+}
+
+char *push_string(Emitter *e, char *str) {
+    char *label = malloc(sizeof(char) * 10);
+    snprintf(label, 10, "_LD%d", e->string_count);
+
+    e->strings[e->string_count] = str;
+
+    e->string_count++;
     return label;
 }
 
@@ -152,6 +176,12 @@ void emit_expression(Emitter *e, Expression *expression) {
         case EXPR_NUMBER:
             p(e, "push %ld", expression->as.number);
             break;
+        case EXPR_STRING:
+            {
+                char *str_label = push_string(e, expression->as.string);
+                p(e, "push %s", str_label);
+                break;
+            }
         case EXPR_IDENT:
             {
                 int symbol_offset = get_symbol(e, expression->as.ident);
@@ -336,6 +366,17 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
     }
 }
 
+void emit_strings(Emitter *e) {
+    for (int i = 0; i < e->string_count; i++) {
+        pn(e, "_LD%d db ", i);
+        char *str = e->strings[i];
+        while (*str != '\0') {
+            pn(e, "%d, ", *str++);
+        }
+        pn(e, "0\n");
+    }
+}
+
 void emit(Emitter *e, Statement **ast, size_t statement_count) {
     char header[] = "format ELF64\n\
 public main\n\
@@ -353,6 +394,8 @@ mov rbp, rsp\n";
 
     memcpy(e->head, footer, sizeof(footer)-1);
     e->head += sizeof(footer)-1;
+
+    emit_strings(e);
 }
 
 typedef enum {
@@ -361,6 +404,7 @@ typedef enum {
     T_IDENT,
     T_EQUALS,
     T_INTLIT,
+    T_STRLIT,
     T_PLUS,
     T_MINUS,
     T_STAR,
@@ -434,6 +478,10 @@ Expression *parse_factor(Parser *p) {
         case T_IDENT:
             expr->kind = EXPR_IDENT;
             expr->as.ident = t.value.s;
+            break;
+        case T_STRLIT:
+            expr->kind = EXPR_STRING;
+            expr->as.string = t.value.s;
             break;
         default:
             fprintf(stderr, "Unexpected token in factor\n");
@@ -729,6 +777,33 @@ Token lex_token(Lexer *l) {
         return (Token){T_GT, {0}};
     }
 
+    if (c == '"') {
+
+        char *strlit = calloc(1, sizeof(char) * 0x1000);
+
+        int i = 0;
+        while (1) {
+            char n = l_next(l);
+            if (n == '"') break;
+            else if (n == '\\') {
+                char nn = l_next(l);
+                if (nn == '"') {
+                    strlit[i++] = '\\';
+                    strlit[i++] = '"';
+                }
+                if (nn == 'n') {
+                    strlit[i++] = '\n';
+                }
+            } else {
+                strlit[i++] = n;
+            }
+        }
+
+        strlit[i] = '\0';
+
+        return (Token){T_STRLIT, { .s = strlit }};
+    }
+
     if (isdigit(c)) {
         long number = c - '0';
         while (isdigit(l_peek(l))) {
@@ -817,7 +892,8 @@ int main(int argc, char **argv) {
 
     char assembly[0x100000] = {0};
     char *symbols[0x100];
-    Emitter e = {assembly, assembly, symbols, 0, 0};
+    char *string_labels[0x100];
+    Emitter e = {assembly, assembly, symbols, 0, 0, string_labels, 0};
     emit(&e, program, statement_count);
 
     char *asm_filename = replace_ext(filename, ".asm");
