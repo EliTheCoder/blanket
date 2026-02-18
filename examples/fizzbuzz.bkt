@@ -1,0 +1,39 @@
+extern exit
+extern putchar
+
+let i = 0
+
+let a = 0
+let b = 0
+let c = 0
+
+while i < 100 {
+    i = i + 1
+    if i % 3 == 0 {
+        putchar(70)
+        putchar(105)
+        putchar(122)
+        putchar(122)
+    }
+    if i % 5 == 0 {
+        putchar(66)
+        putchar(117)
+        putchar(122)
+        putchar(122)
+    }
+    if i % 3 != 0 {
+        if i % 5 != 0 {
+            a = i / 100 % 10
+            b = i / 10 % 10
+            c = i / 1 % 10
+
+            if a > 0 { putchar(a + 48) }
+            if a + b > 0 { putchar(b + 48) }
+            putchar(c + 48)
+        }
+    }
+    putchar(10)
+}
+
+
+exit(0)

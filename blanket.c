@@ -11,6 +11,9 @@ typedef enum {
     EXPR_IDENT,
     EXPR_ADD,
     EXPR_SUB,
+    EXPR_MUL,
+    EXPR_DIV,
+    EXPR_MOD,
 } ExpressionKind;
 
 typedef struct Expression {
@@ -175,6 +178,32 @@ void emit_expression(Emitter *e, Expression *expression) {
             p(e, "sub rax, rbx");
             p(e, "push rax");
             break;
+        case EXPR_MUL:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "imul rbx");
+            p(e, "push rax");
+            break;
+        case EXPR_DIV:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cqo");
+            p(e, "idiv rbx");
+            p(e, "push rax");
+            break;
+        case EXPR_MOD:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cqo");
+            p(e, "idiv rbx");
+            p(e, "push rdx");
+            break;
     }
 }
 
@@ -334,6 +363,9 @@ typedef enum {
     T_INTLIT,
     T_PLUS,
     T_MINUS,
+    T_STAR,
+    T_SLASH,
+    T_PERCENT,
     T_LT,
     T_GT,
     T_LTE,
@@ -411,13 +443,33 @@ Expression *parse_factor(Parser *p) {
     return expr;
 }
 
-Expression *parse_expression(Parser *p) {
+Expression *parse_term(Parser *p) {
     Expression *left = parse_factor(p);
+
+    while (peek(p).kind == T_STAR || peek(p).kind == T_SLASH || peek(p).kind == T_PERCENT) {
+        Token t = next(p);
+
+        Expression *right = parse_factor(p);
+
+        Expression *op = malloc(sizeof(Expression));
+
+        op->kind = t.kind == T_STAR ? EXPR_MUL : t.kind == T_SLASH ? EXPR_DIV : EXPR_MOD;
+        op->as.binop.left = left;
+        op->as.binop.right = right;
+
+        left = op;
+    }
+
+    return left;
+}
+
+Expression *parse_expression(Parser *p) {
+    Expression *left = parse_term(p);
 
     while (peek(p).kind == T_PLUS || peek(p).kind == T_MINUS) {
         Token t = next(p);
 
-        Expression *right = parse_factor(p);
+        Expression *right = parse_term(p);
 
         Expression *op = malloc(sizeof(Expression));
 
@@ -458,7 +510,7 @@ Condition *parse_condition(Parser *p) {
             cond->kind = COND_NEQ;
             break;
         default:
-            fprintf(stderr, "Expected condition to have one of <, <=, >, >=, ==, or !=\n");
+            fprintf(stderr, "Expected condition to have one of <, <=, >, >=, ==, or != but found %d\n", t.kind);
             exit(1);
     }
 
@@ -638,15 +690,24 @@ Token lex_token(Lexer *l) {
         while (isspace(l_peek(l))) l_next(l);
         return (Token){T_NEWLINE, {0}};
     }
-    if (c == '=') return (Token){T_EQUALS, {0}};
     if (c == '+') return (Token){T_PLUS, {0}};
     if (c == '-') return (Token){T_MINUS, {0}};
+    if (c == '*') return (Token){T_STAR, {0}};
+    if (c == '/') return (Token){T_SLASH, {0}};
+    if (c == '%') return (Token){T_PERCENT, {0}};
     if (c == ';') return (Token){T_SEMICOLON, {0}};
     if (c == '(') return (Token){T_LPAREN, {0}};
     if (c == ')') return (Token){T_RPAREN, {0}};
     if (c == ',') return (Token){T_COMMA, {0}};
     if (c == '{') return (Token){T_LCURLY, {0}};
     if (c == '}') return (Token){T_RCURLY, {0}};
+    if (c == '=') {
+        if (l_peek(l) == '=') {
+            l_next(l);
+            return (Token){T_EQ, {0}};
+        }
+        return (Token){T_EQUALS, {0}};
+    }
     if (c == '!') {
         if (l_peek(l) == '=') {
             l_next(l);
@@ -663,9 +724,9 @@ Token lex_token(Lexer *l) {
     if (c == '>') {
         if (l_peek(l) == '=') {
             l_next(l);
-            return (Token){T_LTE, {0}};
+            return (Token){T_GTE, {0}};
         }
-        return (Token){T_LT, {0}};
+        return (Token){T_GT, {0}};
     }
 
     if (isdigit(c)) {
