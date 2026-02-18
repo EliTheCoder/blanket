@@ -10,6 +10,7 @@ typedef enum {
     EXPR_NUMBER,
     EXPR_IDENT,
     EXPR_ADD,
+    EXPR_SUB,
 } ExpressionKind;
 
 typedef struct Expression {
@@ -21,14 +22,35 @@ typedef struct Expression {
         struct {
             struct Expression *left;
             struct Expression *right;
-        } add;
+        } binop;
     } as;
 } Expression;
+
+typedef enum {
+    COND_LT,
+    COND_LTE,
+    COND_GT,
+    COND_GTE,
+    COND_EQ,
+    COND_NEQ
+} ConditionKind;
+
+typedef struct {
+    ConditionKind kind;
+
+    Expression *left;
+    Expression *right;
+} Condition;
 
 typedef struct {
     char *name;
     Expression *expression;
 } Declaration;
+
+typedef struct {
+    char *name;
+    Expression *expression;
+} Assignment;
 
 typedef struct {
     char *name;
@@ -41,30 +63,41 @@ typedef struct {
 } External;
 
 typedef struct IfStatement IfStatement;
+typedef struct WhileStatement WhileStatement;
 typedef struct Statement Statement;
 
 typedef enum {
     DECLARATION,
+    ASSIGNMENT,
     FUNCTION_CALL,
     EXTERNAL,
     IF_STATEMENT,
+    WHILE_STATEMENT,
 } StatementKind;
 
 typedef struct Statement {
     union {
         Declaration *declaration;
+        Assignment *assignment;
         FunctionCall *function_call;
         External *external;
         IfStatement *if_statement;
+        WhileStatement *while_statement;
     } as;
     StatementKind kind;
 } Statement;
 
 typedef struct IfStatement {
-    Expression *condition;
+    Condition *condition;
     Statement **statements;
     size_t statement_count;
 } IfStatement;
+
+typedef struct WhileStatement {
+    Condition *condition;
+    Statement **statements;
+    size_t statement_count;
+} WhileStatement;
 
 typedef struct {
     char *base;
@@ -127,13 +160,52 @@ void emit_expression(Emitter *e, Expression *expression) {
                 break;
             }
         case EXPR_ADD:
-            emit_expression(e, expression->as.add.left);
-            emit_expression(e, expression->as.add.right);
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
             p(e, "pop rbx");
             p(e, "pop rax");
             p(e, "add rax, rbx");
             p(e, "push rax");
             break;
+        case EXPR_SUB:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "sub rax, rbx");
+            p(e, "push rax");
+            break;
+    }
+}
+
+void emit_condition(Emitter *e, Condition *condition) {
+    emit_expression(e, condition->left);
+    emit_expression(e, condition->right);
+    p(e, "pop rbx");
+    p(e, "pop rax");
+    p(e, "cmp rax, rbx");
+    switch (condition->kind) {
+        case COND_LT:
+            p(e, "setl al");
+            break;
+        case COND_LTE:
+            p(e, "setle al");
+            break;
+        case COND_GT:
+            p(e, "setg al");
+            break;
+        case COND_GTE:
+            p(e, "setge al");
+            break;
+        case COND_EQ:
+            p(e, "sete al");
+            break;
+        case COND_NEQ:
+            p(e, "setne al");
+            break;
+        default:
+            fprintf(stderr, "Unknown condition kind %d\n", condition->kind);
+            exit(1);
     }
 }
 
@@ -145,6 +217,19 @@ void emit_declaration(Emitter *e, Declaration *declaration) {
 
     p(e, "pop rax");
     p(e, "mov [rsp], rax");
+}
+
+void emit_assignment(Emitter *e, Assignment *assignment) {
+    emit_expression(e, assignment->expression);
+    p(e, "pop rax");
+
+    int symbol_offset = get_symbol(e, assignment->name);
+    if (symbol_offset < 0) {
+        fprintf(stderr, "Undeclared symbol %s\n", assignment->name);
+        exit(1);
+    }
+
+    p(e, "mov [rbp-%d], rax", symbol_offset);
 }
 
 void emit_function_call(Emitter *e, FunctionCall *function_call) {
@@ -167,14 +252,28 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
 void emit_if_statement(Emitter *e, IfStatement *if_statement) {
     char *label = new_label(e);
 
-    emit_expression(e, if_statement->condition);
-    p(e, "pop rax");
-    p(e, "test rax, rax");
+    emit_condition(e, if_statement->condition);
+    p(e, "test al, al");
     p(e, "jz %s", label);
 
     emit_statements(e, if_statement->statements, if_statement->statement_count);
 
     p(e, "%s:", label);
+}
+
+void emit_while_statement(Emitter *e, WhileStatement *while_statement) {
+    char *start_label = new_label(e);
+    char *end_label = new_label(e);
+
+    p(e, "%s:", start_label);
+    emit_condition(e, while_statement->condition);
+    p(e, "test al, al");
+    p(e, "jz %s", end_label);
+
+    emit_statements(e, while_statement->statements, while_statement->statement_count);
+
+    p(e, "jmp %s", start_label);
+    p(e, "%s:", end_label);
 }
 
 void emit_statements(Emitter *e, Statement **statements, size_t statement_count) {
@@ -185,6 +284,9 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
             case DECLARATION:
                 emit_declaration(e, s->as.declaration);
                 break;
+            case ASSIGNMENT:
+                emit_assignment(e, s->as.assignment);
+                break;
             case FUNCTION_CALL:
                 emit_function_call(e, s->as.function_call);
                 break;
@@ -193,6 +295,9 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
                 break;
             case IF_STATEMENT:
                 emit_if_statement(e, s->as.if_statement);
+                break;
+            case WHILE_STATEMENT:
+                emit_while_statement(e, s->as.while_statement);
                 break;
             default:
                 fprintf(stderr, "Expected statement but found %d\n", s->kind);
@@ -203,17 +308,22 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
 }
 
 void emit(Emitter *e, Statement **ast, size_t statement_count) {
-    FILE *header = fopen("./header.asm", "r");
-    fseek(header, 0, SEEK_END);
-    long size = ftell(header);
-    rewind(header);
+    char header[] = "format ELF64\n\
+public main\n\
+section '.text' executable\n\
+main:\n\
+push rbp\n\
+mov rbp, rsp\n";
 
-    fread(e->head, 1, size, header);
-    e->head += size;
-
-    fclose(header);
+    memcpy(e->head, header, sizeof(header)-1);
+    e->head += sizeof(header)-1;
 
     emit_statements(e, ast, statement_count);
+
+    char footer[] = "leave\n";
+
+    memcpy(e->head, footer, sizeof(footer)-1);
+    e->head += sizeof(footer)-1;
 }
 
 typedef enum {
@@ -223,6 +333,13 @@ typedef enum {
     T_EQUALS,
     T_INTLIT,
     T_PLUS,
+    T_MINUS,
+    T_LT,
+    T_GT,
+    T_LTE,
+    T_GTE,
+    T_EQ,
+    T_NEQ,
     T_SEMICOLON,
     T_NEWLINE,
     T_LPAREN,
@@ -230,6 +347,7 @@ typedef enum {
     T_COMMA,
     T_EXTERN,
     T_IF,
+    T_WHILE,
     T_LCURLY,
     T_RCURLY,
 } TokenKind;
@@ -250,6 +368,11 @@ typedef struct {
 Token peek(Parser *p) {
     if (p->cursor >= p->end) return (Token){T_EOF, {0}};
     return *p->cursor;
+}
+
+Token peekn(Parser *p, int n) {
+    if (p->cursor+n >= p->end) return (Token){T_EOF, {0}};
+    return p->cursor[n];
 }
 
 Token next(Parser *p) {
@@ -291,21 +414,57 @@ Expression *parse_factor(Parser *p) {
 Expression *parse_expression(Parser *p) {
     Expression *left = parse_factor(p);
 
-    while (peek(p).kind == T_PLUS) {
-        next(p);
+    while (peek(p).kind == T_PLUS || peek(p).kind == T_MINUS) {
+        Token t = next(p);
 
         Expression *right = parse_factor(p);
 
-        Expression *add = malloc(sizeof(Expression));
+        Expression *op = malloc(sizeof(Expression));
 
-        add->kind = EXPR_ADD;
-        add->as.add.left = left;
-        add->as.add.right = right;
+        op->kind = t.kind == T_PLUS ? EXPR_ADD : EXPR_SUB;
+        op->as.binop.left = left;
+        op->as.binop.right = right;
 
-        left = add;
+        left = op;
     }
 
     return left;
+}
+
+Condition *parse_condition(Parser *p) {
+
+    Condition *cond = malloc(sizeof(Condition));
+
+    cond->left = parse_expression(p);
+
+    Token t = next(p);
+    switch (t.kind) {
+        case T_LT:
+            cond->kind = COND_LT;
+            break;
+        case T_LTE:
+            cond->kind = COND_LTE;
+            break;
+        case T_GT:
+            cond->kind = COND_GT;
+            break;
+        case T_GTE:
+            cond->kind = COND_GTE;
+            break;
+        case T_EQ:
+            cond->kind = COND_EQ;
+            break;
+        case T_NEQ:
+            cond->kind = COND_NEQ;
+            break;
+        default:
+            fprintf(stderr, "Expected condition to have one of <, <=, >, >=, ==, or !=\n");
+            exit(1);
+    }
+
+    cond->right = parse_expression(p);
+
+    return cond;
 }
 
 Declaration *parse_declaration(Parser *p) {
@@ -318,6 +477,17 @@ Declaration *parse_declaration(Parser *p) {
     decl->expression = parse_expression(p);
 
     return decl;
+}
+
+Assignment *parse_assignment(Parser *p) {
+    Assignment *ass = malloc(sizeof(Assignment));
+
+    Token name = require(p, T_IDENT);
+    require(p, T_EQUALS);
+    ass->name = name.value.s;
+    ass->expression = parse_expression(p);
+
+    return ass;
 }
 
 FunctionCall *parse_function_call(Parser *p) {
@@ -350,7 +520,7 @@ IfStatement *parse_if_statement(Parser *p) {
     IfStatement *ifs = malloc(sizeof(IfStatement));
 
     require(p, T_IF);
-    ifs->condition = parse_expression(p);
+    ifs->condition = parse_condition(p);
     require(p, T_LCURLY);
     Statement **statements = malloc(sizeof(Statement*) * 100);
     size_t statement_count = parse(p, statements);
@@ -361,6 +531,23 @@ IfStatement *parse_if_statement(Parser *p) {
     require(p, T_RCURLY);
 
     return ifs;
+}
+
+WhileStatement *parse_while_statement(Parser *p) {
+    WhileStatement *whil = malloc(sizeof(WhileStatement));
+
+    require(p, T_WHILE);
+    whil->condition = parse_condition(p);
+    require(p, T_LCURLY);
+    Statement **statements = malloc(sizeof(Statement*) * 100);
+    size_t statement_count = parse(p, statements);
+
+    whil->statements = statements;
+    whil->statement_count = statement_count;
+
+    require(p, T_RCURLY);
+
+    return whil;
 }
 
 External *parse_external(Parser *p) {
@@ -385,9 +572,17 @@ Statement *parse_statement(Parser *p) {
             s->as.declaration = parse_declaration(p);
             break;
         case T_IDENT:
-            s->kind = FUNCTION_CALL;
-            s->as.function_call = parse_function_call(p);
-            break;
+            {
+                TokenKind second = peekn(p, 1).kind;
+                if (second == T_LPAREN) {
+                    s->kind = FUNCTION_CALL;
+                    s->as.function_call = parse_function_call(p);
+                } else if (second == T_EQUALS) {
+                    s->kind = ASSIGNMENT;
+                    s->as.assignment = parse_assignment(p);
+                }
+                break;
+            }
         case T_EXTERN:
             s->kind = EXTERNAL;
             s->as.external = parse_external(p);
@@ -395,6 +590,10 @@ Statement *parse_statement(Parser *p) {
         case T_IF:
             s->kind = IF_STATEMENT;
             s->as.if_statement = parse_if_statement(p);
+            break;
+        case T_WHILE:
+            s->kind = WHILE_STATEMENT;
+            s->as.while_statement = parse_while_statement(p);
             break;
         default:
             fprintf(stderr, "Expected statement but found %d\n", peek(p).kind);
@@ -441,12 +640,33 @@ Token lex_token(Lexer *l) {
     }
     if (c == '=') return (Token){T_EQUALS, {0}};
     if (c == '+') return (Token){T_PLUS, {0}};
+    if (c == '-') return (Token){T_MINUS, {0}};
     if (c == ';') return (Token){T_SEMICOLON, {0}};
     if (c == '(') return (Token){T_LPAREN, {0}};
     if (c == ')') return (Token){T_RPAREN, {0}};
     if (c == ',') return (Token){T_COMMA, {0}};
     if (c == '{') return (Token){T_LCURLY, {0}};
     if (c == '}') return (Token){T_RCURLY, {0}};
+    if (c == '!') {
+        if (l_peek(l) == '=') {
+            l_next(l);
+            return (Token){T_NEQ, {0}};
+        }
+    }
+    if (c == '<') {
+        if (l_peek(l) == '=') {
+            l_next(l);
+            return (Token){T_LTE, {0}};
+        }
+        return (Token){T_LT, {0}};
+    }
+    if (c == '>') {
+        if (l_peek(l) == '=') {
+            l_next(l);
+            return (Token){T_LTE, {0}};
+        }
+        return (Token){T_LT, {0}};
+    }
 
     if (isdigit(c)) {
         long number = c - '0';
@@ -462,7 +682,7 @@ Token lex_token(Lexer *l) {
     }
 
     if (!isalnum(c)) {
-        fprintf(stderr, "Unexpected character %c\n", c);
+        fprintf(stderr, "Unexpected character %c at byte %ld\n", c, l->head-l->base);
         exit(1);
     }
 
@@ -478,6 +698,7 @@ Token lex_token(Lexer *l) {
     if (strcmp(token, "let") == 0) return (Token){T_LET, {0}};
     if (strcmp(token, "extern") == 0) return (Token){T_EXTERN, {0}};
     if (strcmp(token, "if") == 0) return (Token){T_IF, {0}};
+    if (strcmp(token, "while") == 0) return (Token){T_WHILE, {0}};
 
     return (Token){T_IDENT, { .s = token }};
 }
