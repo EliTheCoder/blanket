@@ -10,11 +10,19 @@ typedef enum {
     EXPR_NUMBER,
     EXPR_STRING,
     EXPR_IDENT,
+    EXPR_AND,
+    EXPR_OR,
     EXPR_ADD,
     EXPR_SUB,
     EXPR_MUL,
     EXPR_DIV,
     EXPR_MOD,
+    EXPR_LT,
+    EXPR_LTE,
+    EXPR_GT,
+    EXPR_GTE,
+    EXPR_EQ,
+    EXPR_NEQ
 } ExpressionKind;
 
 typedef struct Expression {
@@ -30,22 +38,6 @@ typedef struct Expression {
         } binop;
     } as;
 } Expression;
-
-typedef enum {
-    COND_LT,
-    COND_LTE,
-    COND_GT,
-    COND_GTE,
-    COND_EQ,
-    COND_NEQ
-} ConditionKind;
-
-typedef struct {
-    ConditionKind kind;
-
-    Expression *left;
-    Expression *right;
-} Condition;
 
 typedef struct {
     char *name;
@@ -93,13 +85,13 @@ typedef struct Statement {
 } Statement;
 
 typedef struct IfStatement {
-    Condition *condition;
+    Expression *condition;
     Statement **statements;
     size_t statement_count;
 } IfStatement;
 
 typedef struct WhileStatement {
-    Condition *condition;
+    Expression *condition;
     Statement **statements;
     size_t statement_count;
 } WhileStatement;
@@ -160,7 +152,7 @@ int get_symbol(Emitter *e, const char *symbol) {
     if (i >= e->symbol_count) {
         return -1;
     }
-    return (i + 1) * 8;
+    return (i + 1) * 16;
 }
 
 void push_symbol(Emitter *e, char *symbol) {
@@ -234,42 +226,88 @@ void emit_expression(Emitter *e, Expression *expression) {
             p(e, "idiv rbx");
             p(e, "push rdx");
             break;
-    }
-}
-
-void emit_condition(Emitter *e, Condition *condition) {
-    emit_expression(e, condition->left);
-    emit_expression(e, condition->right);
-    p(e, "pop rbx");
-    p(e, "pop rax");
-    p(e, "cmp rax, rbx");
-    switch (condition->kind) {
-        case COND_LT:
+        case EXPR_LT:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cmp rax, rbx");
             p(e, "setl al");
+            p(e, "movzx rax, al");
+            p(e, "push rax");
             break;
-        case COND_LTE:
+        case EXPR_LTE:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cmp rax, rbx");
             p(e, "setle al");
+            p(e, "movzx rax, al");
+            p(e, "push rax");
             break;
-        case COND_GT:
+        case EXPR_GT:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cmp rax, rbx");
             p(e, "setg al");
+            p(e, "movzx rax, al");
+            p(e, "push rax");
             break;
-        case COND_GTE:
+        case EXPR_GTE:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cmp rax, rbx");
             p(e, "setge al");
+            p(e, "movzx rax, al");
+            p(e, "push rax");
             break;
-        case COND_EQ:
+        case EXPR_EQ:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cmp rax, rbx");
             p(e, "sete al");
+            p(e, "movzx rax, al");
+            p(e, "push rax");
             break;
-        case COND_NEQ:
+        case EXPR_NEQ:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "cmp rax, rbx");
             p(e, "setne al");
+            p(e, "movzx rax, al");
+            p(e, "push rax");
             break;
-        default:
-            fprintf(stderr, "Unknown condition kind %d\n", condition->kind);
-            exit(1);
+        case EXPR_AND:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "test rbx, rbx");
+            p(e, "cmovz rax, rbx");
+            p(e, "push rax");
+            break;
+        case EXPR_OR:
+            emit_expression(e, expression->as.binop.left);
+            emit_expression(e, expression->as.binop.right);
+            p(e, "pop rbx");
+            p(e, "pop rax");
+            p(e, "or rax, rbx");
+            p(e, "push rax");
+            break;
     }
 }
 
 void emit_declaration(Emitter *e, Declaration *declaration) {
-    p(e, "sub rsp, 8");
+    p(e, "sub rsp, 16");
 
     push_symbol(e, declaration->name);
     emit_expression(e, declaration->expression);
@@ -311,8 +349,9 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
 void emit_if_statement(Emitter *e, IfStatement *if_statement) {
     char *label = new_label(e);
 
-    emit_condition(e, if_statement->condition);
-    p(e, "test al, al");
+    emit_expression(e, if_statement->condition);
+    p(e, "pop rax");
+    p(e, "test rax, rax");
     p(e, "jz %s", label);
 
     emit_statements(e, if_statement->statements, if_statement->statement_count);
@@ -325,8 +364,9 @@ void emit_while_statement(Emitter *e, WhileStatement *while_statement) {
     char *end_label = new_label(e);
 
     p(e, "%s:", start_label);
-    emit_condition(e, while_statement->condition);
-    p(e, "test al, al");
+    emit_expression(e, while_statement->condition);
+    p(e, "pop rax");
+    p(e, "test rax, rax");
     p(e, "jz %s", end_label);
 
     emit_statements(e, while_statement->statements, while_statement->statement_count);
@@ -359,7 +399,7 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
                 emit_while_statement(e, s->as.while_statement);
                 break;
             default:
-                fprintf(stderr, "Expected statement but found %d\n", s->kind);
+                fprintf(stderr, "Expected a statement but found %d\n", s->kind);
                 exit(1);
                 break;
         }
@@ -416,6 +456,8 @@ typedef enum {
     T_GTE,
     T_EQ,
     T_NEQ,
+    T_AND,
+    T_OR,
     T_SEMICOLON,
     T_NEWLINE,
     T_LPAREN,
@@ -511,19 +553,17 @@ Expression *parse_term(Parser *p) {
     return left;
 }
 
-Expression *parse_expression(Parser *p) {
+Expression *parse_additive(Parser *p) {
     Expression *left = parse_term(p);
 
     while (peek(p).kind == T_PLUS || peek(p).kind == T_MINUS) {
         Token t = next(p);
 
-        Expression *right = parse_term(p);
-
         Expression *op = malloc(sizeof(Expression));
 
         op->kind = t.kind == T_PLUS ? EXPR_ADD : EXPR_SUB;
         op->as.binop.left = left;
-        op->as.binop.right = right;
+        op->as.binop.right = parse_term(p);
 
         left = op;
     }
@@ -531,40 +571,81 @@ Expression *parse_expression(Parser *p) {
     return left;
 }
 
-Condition *parse_condition(Parser *p) {
+Expression *parse_condition(Parser *p) {
 
-    Condition *cond = malloc(sizeof(Condition));
+    Expression *left = parse_additive(p);
 
-    cond->left = parse_expression(p);
+    ExpressionKind kind;
 
-    Token t = next(p);
+    Token t = peek(p);
     switch (t.kind) {
         case T_LT:
-            cond->kind = COND_LT;
+            kind = EXPR_LT;
             break;
         case T_LTE:
-            cond->kind = COND_LTE;
+            kind = EXPR_LTE;
             break;
         case T_GT:
-            cond->kind = COND_GT;
+            kind = EXPR_GT;
             break;
         case T_GTE:
-            cond->kind = COND_GTE;
+            kind = EXPR_GTE;
             break;
         case T_EQ:
-            cond->kind = COND_EQ;
+            kind = EXPR_EQ;
             break;
         case T_NEQ:
-            cond->kind = COND_NEQ;
+            kind = EXPR_NEQ;
             break;
         default:
-            fprintf(stderr, "Expected condition to have one of <, <=, >, >=, ==, or != but found %d\n", t.kind);
-            exit(1);
+            return left;
     }
 
-    cond->right = parse_expression(p);
+    next(p);
 
-    return cond;
+    Expression *op = malloc(sizeof(Expression));
+
+    op->kind = kind;
+    op->as.binop.left = left;
+    op->as.binop.right = parse_additive(p);
+
+    return op;
+}
+
+Expression *parse_and_expression(Parser *p) {
+    Expression *left = parse_condition(p);
+
+    while (peek(p).kind == T_AND) {
+        next(p);
+
+        Expression *op = malloc(sizeof(Expression));
+
+        op->kind = EXPR_AND;
+        op->as.binop.left = left;
+        op->as.binop.right = parse_condition(p);
+
+        left = op;
+    }
+
+    return left;
+}
+
+Expression *parse_expression(Parser *p) {
+    Expression *left = parse_and_expression(p);
+
+    while (peek(p).kind == T_OR) {
+        next(p);
+
+        Expression *op = malloc(sizeof(Expression));
+
+        op->kind = EXPR_OR;
+        op->as.binop.left = left;
+        op->as.binop.right = parse_and_expression(p);
+
+        left = op;
+    }
+
+    return left;
 }
 
 Declaration *parse_declaration(Parser *p) {
@@ -620,7 +701,7 @@ IfStatement *parse_if_statement(Parser *p) {
     IfStatement *ifs = malloc(sizeof(IfStatement));
 
     require(p, T_IF);
-    ifs->condition = parse_condition(p);
+    ifs->condition = parse_expression(p);
     require(p, T_LCURLY);
     Statement **statements = malloc(sizeof(Statement*) * 100);
     size_t statement_count = parse(p, statements);
@@ -637,7 +718,7 @@ WhileStatement *parse_while_statement(Parser *p) {
     WhileStatement *whil = malloc(sizeof(WhileStatement));
 
     require(p, T_WHILE);
-    whil->condition = parse_condition(p);
+    whil->condition = parse_expression(p);
     require(p, T_LCURLY);
     Statement **statements = malloc(sizeof(Statement*) * 100);
     size_t statement_count = parse(p, statements);
@@ -749,6 +830,14 @@ Token lex_token(Lexer *l) {
     if (c == ',') return (Token){T_COMMA, {0}};
     if (c == '{') return (Token){T_LCURLY, {0}};
     if (c == '}') return (Token){T_RCURLY, {0}};
+    if (c == '&' && l_peek(l) == '&') {
+        l_next(l);
+        return (Token){T_AND, {0}};
+    }
+    if (c == '|' && l_peek(l) == '|') {
+        l_next(l);
+        return (Token){T_OR, {0}};
+    }
     if (c == '=') {
         if (l_peek(l) == '=') {
             l_next(l);
