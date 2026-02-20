@@ -1,0 +1,70 @@
+extern printf
+
+fn complex_square_a(scale, a, b) {
+    let t = a*a - b*b
+    return t/scale
+}
+fn complex_square_b(scale, a, b) {
+    return 2*a*b/scale
+}
+
+fn complex_magnitude_squared(scale, a, b) {
+    return a*a/scale + b*b/scale
+}
+
+fn mandelbrot(scale, a, b) {
+    let za = 0
+    let zb = 0
+    let temp_za = 0
+
+    let broke = 0 - 1
+
+    let i = 0
+    while i < 1000 {
+        temp_za = complex_square_a(scale, za, zb)
+        zb = complex_square_b(scale, za, zb)
+        za = temp_za
+        za = za + a
+        zb = zb + b
+        if complex_magnitude_squared(scale, za, zb) > 4*scale {
+            broke = i
+            i = 1000
+        }
+        i = i + 1
+    }
+
+    if broke != 0 - 1 {
+        return broke
+    }
+    return 0 - 1
+}
+
+let scale = 7000
+
+let y = 0 - 1
+y = y*scale
+let x = 0 - 2
+x = x*scale
+
+let g = 1
+
+while y < 1*scale {
+    x = 0 - 2
+    x = x*scale
+    while x < 1*scale {
+        g = 1
+        if mandelbrot(scale, x, y) >= 0 {
+            printf(" ")
+            g = 0
+        }
+        if g {
+            printf("█")
+        }
+        x = x + 25
+    }
+    printf("\n")
+    y = y + 50
+}
+
+
+
