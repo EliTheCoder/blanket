@@ -971,6 +971,10 @@ Token lex_token(Lexer *l) {
 
     char c = l_next(l);
 
+    while (c == '/' && l_peek(l) == '/') {
+        c = l_next(l);
+        while (c != '\n') c = l_next(l);
+    }
     if (c == '\n') {
         while (isspace(l_peek(l))) l_next(l);
         return (Token){T_NEWLINE, {0}};
@@ -1062,7 +1066,7 @@ Token lex_token(Lexer *l) {
         return (Token){T_INTLIT, { .l = number }};
     }
 
-    if (!isalnum(c)) {
+    if (!isalnum(c) && c != '_') {
         fprintf(stderr, "Unexpected character %c at byte %ld\n", c, l->head-l->base);
         exit(1);
     }
@@ -1072,7 +1076,7 @@ Token lex_token(Lexer *l) {
     token[0] = c;
 
     int i = 1;
-    while (isalnum(l_peek(l))) {
+    while (isalnum(l_peek(l)) || l_peek(l) == '_') {
         token[i++] = l_next(l);
     }
 
@@ -1125,15 +1129,15 @@ int main(int argc, char **argv) {
     long size = ftell(fp);
     rewind(fp);
 
-    char *code = malloc(size*sizeof(char));
+    char *code = calloc(1, (size+1)*sizeof(char));
     fread(code, 1, size, fp);
     fclose(fp);
     
-    Token tokens[0x1000];
+    Token tokens[0x10000];
     Lexer l = {code, code};
     size_t token_count = lex(&l, tokens);
 
-    Statement *program[100];
+    Statement *program[0x1000];
     Parser p = {tokens, tokens + token_count};
     size_t statement_count = parse(&p, program);
 
