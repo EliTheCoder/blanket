@@ -22,8 +22,12 @@ typedef enum {
     EXPR_GT,
     EXPR_GTE,
     EXPR_EQ,
-    EXPR_NEQ
+    EXPR_NEQ,
+    EXPR_FUNCTION_CALL,
 } ExpressionKind;
+
+typedef struct FunctionCall FunctionCall;
+typedef struct Expression Expression;
 
 typedef struct Expression {
     ExpressionKind kind;
@@ -32,6 +36,7 @@ typedef struct Expression {
         long number;
         char *ident;
         char *string;
+        FunctionCall *function_call;
         struct {
             struct Expression *left;
             struct Expression *right;
@@ -49,7 +54,7 @@ typedef struct {
     Expression *expression;
 } Assignment;
 
-typedef struct {
+typedef struct FunctionCall {
     char *name;
     Expression **arguments;
     size_t argument_count;
@@ -59,8 +64,13 @@ typedef struct {
     char *name;
 } External;
 
+typedef struct {
+    Expression *expression;
+} ReturnStatement;
+
 typedef struct IfStatement IfStatement;
 typedef struct WhileStatement WhileStatement;
+typedef struct Function Function;
 typedef struct Statement Statement;
 
 typedef enum {
@@ -70,6 +80,8 @@ typedef enum {
     EXTERNAL,
     IF_STATEMENT,
     WHILE_STATEMENT,
+    FUNCTION,
+    RETURN_STATEMENT,
 } StatementKind;
 
 typedef struct Statement {
@@ -80,9 +92,19 @@ typedef struct Statement {
         External *external;
         IfStatement *if_statement;
         WhileStatement *while_statement;
+        Function *function;
+        ReturnStatement *return_statement;
     } as;
     StatementKind kind;
 } Statement;
+
+typedef struct Function {
+    char *name;
+    char **parameters;
+    size_t parameter_count;
+    Statement **statements;
+    size_t statement_count;
+} Function;
 
 typedef struct IfStatement {
     Expression *condition;
@@ -99,6 +121,8 @@ typedef struct WhileStatement {
 typedef struct {
     char *base;
     char *head;
+    char *back_base;
+    char *back_head;
     char **symbols;
     size_t symbol_count;
     int label_count;
@@ -125,6 +149,17 @@ void p(Emitter *e, const char *fmt, ...) {
     memcpy(e->head, buf, n);
     e->head[n] = '\n';
     e->head += n + 1;
+}
+
+void p_back(Emitter *e, const char *fmt, ...) {
+    char buf[128];
+    va_list a;
+    va_start(a, fmt);
+    size_t n = vsnprintf(buf, sizeof(buf), fmt, a);
+    va_end(a);
+    memcpy(e->back_head, buf, n);
+    e->back_head[n] = '\n';
+    e->back_head += n + 1;
 }
 
 char *new_label(Emitter *e) {
@@ -182,6 +217,20 @@ void emit_expression(Emitter *e, Expression *expression) {
                     exit(1);
                 }
                 p(e, "push [rbp-%d]", get_symbol(e, expression->as.ident));
+                break;
+            }
+        case EXPR_FUNCTION_CALL:
+            {
+                const char *call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+
+                for (size_t i = 0; i < expression->as.function_call->argument_count; i++) {
+                    emit_expression(e, expression->as.function_call->arguments[i]);
+                    p(e, "pop %s", call_registers[i]);
+                }
+
+                p(e, "xor rax, rax");
+                p(e, "call %s", expression->as.function_call->name);
+                p(e, "push rax");
                 break;
             }
         case EXPR_ADD:
@@ -337,6 +386,7 @@ void emit_function_call(Emitter *e, FunctionCall *function_call) {
         p(e, "pop %s", call_registers[i]);
     }
 
+    p(e, "xor rax, rax");
     p(e, "call %s", function_call->name);
 }
 
@@ -375,6 +425,40 @@ void emit_while_statement(Emitter *e, WhileStatement *while_statement) {
     p(e, "%s:", end_label);
 }
 
+void emit_function(Emitter *e, Function *function) {
+    const char *call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+
+    p_back(e, "%s:", function->name);
+    p_back(e, "push rbp");
+    p_back(e, "mov rbp, rsp");
+    p_back(e, "sub rsp, %d", function->parameter_count * 16);
+    char **temp_symbols = e->symbols;
+    size_t temp_symbol_count = e->symbol_count;
+    char *symbols[0x100];
+    e->symbols = symbols;
+    e->symbol_count = 0;
+    for (size_t i = 0; i < function->parameter_count; i++) {
+        p_back(e, "mov [rbp-%d], %s", (i + 1) * 16, call_registers[i]);
+        push_symbol(e, function->parameters[i]);
+    }
+    char *temp_head = e->head;
+    e->head = e->back_head;
+    emit_statements(e, function->statements, function->statement_count);
+    e->symbols = temp_symbols;
+    e->symbol_count = temp_symbol_count;
+    e->back_head = e->head;
+    e->head = temp_head;
+    p_back(e, "leave");
+    p_back(e, "ret");
+}
+
+void emit_return(Emitter *e, ReturnStatement *return_statement) {
+    emit_expression(e, return_statement->expression);
+    p(e, "pop rax");
+    p(e, "leave");
+    p(e, "ret");
+}
+
 void emit_statements(Emitter *e, Statement **statements, size_t statement_count) {
     for (size_t i = 0; i < statement_count; i++) {
         Statement *s = statements[i];
@@ -397,6 +481,12 @@ void emit_statements(Emitter *e, Statement **statements, size_t statement_count)
                 break;
             case WHILE_STATEMENT:
                 emit_while_statement(e, s->as.while_statement);
+                break;
+            case FUNCTION:
+                emit_function(e, s->as.function);
+                break;
+            case RETURN_STATEMENT:
+                emit_return(e, s->as.return_statement);
                 break;
             default:
                 fprintf(stderr, "Expected a statement but found %d\n", s->kind);
@@ -468,6 +558,8 @@ typedef enum {
     T_WHILE,
     T_LCURLY,
     T_RCURLY,
+    T_FN,
+    T_RETURN,
 } TokenKind;
 
 typedef struct {
@@ -508,18 +600,25 @@ Token require(Parser *p, TokenKind token_kind) {
     return t;
 }
 
+FunctionCall *parse_function_call(Parser *p);
+
 Expression *parse_factor(Parser *p) {
     Expression *expr = malloc(sizeof(Expression));
 
-    Token t = next(p);
+    Token t = peek(p);
     switch (t.kind) {
         case T_INTLIT:
             expr->kind = EXPR_NUMBER;
             expr->as.number = t.value.l;
             break;
         case T_IDENT:
-            expr->kind = EXPR_IDENT;
-            expr->as.ident = t.value.s;
+            if (peekn(p, 1).kind == T_LPAREN) {
+                expr->kind = EXPR_FUNCTION_CALL;
+                expr->as.function_call = parse_function_call(p);
+            } else {
+                expr->kind = EXPR_IDENT;
+                expr->as.ident = t.value.s;
+            }
             break;
         case T_STRLIT:
             expr->kind = EXPR_STRING;
@@ -529,6 +628,8 @@ Expression *parse_factor(Parser *p) {
             fprintf(stderr, "Unexpected token in factor\n");
             exit(1);
     }
+
+    next(p);
 
     return expr;
 }
@@ -687,10 +788,10 @@ FunctionCall *parse_function_call(Parser *p) {
         arg_count++;
         if (peek(p).kind != T_RPAREN) require(p, T_COMMA);
     }
+    require(p, T_RPAREN);
 
     call->argument_count = arg_count;
 
-    require(p, T_RPAREN);
 
     return call;
 }
@@ -741,6 +842,48 @@ External *parse_external(Parser *p) {
     return ext;
 }
 
+Function *parse_function(Parser *p) {
+    Function *func = malloc(sizeof(Function));
+
+    require(p, T_FN);
+    Token name = require(p, T_IDENT);
+    require(p, T_LPAREN);
+    char **parameters = malloc(sizeof(char*) * 8);
+    size_t parameter_count = 0;
+    while (peek(p).kind != T_RPAREN) {
+        Expression *expr = parse_factor(p);
+        if (expr->kind != EXPR_IDENT) {
+            fprintf(stderr, "Expected function parameter to be an identifier\n");
+            exit(1);
+        }
+        parameters[parameter_count++] = expr->as.ident;
+        if (peek(p).kind != T_RPAREN) require(p, T_COMMA);
+    }
+    require(p, T_RPAREN);
+
+    require(p, T_LCURLY);
+    Statement **statements = malloc(sizeof(Statement*) * 200);
+    size_t statement_count = parse(p, statements);
+    require(p, T_RCURLY);
+
+    func->name = name.value.s;
+    func->parameters = parameters;
+    func->parameter_count = parameter_count;
+    func->statements = statements;
+    func->statement_count = statement_count;
+
+    return func;
+}
+
+ReturnStatement *parse_return_statement(Parser *p) {
+    ReturnStatement *ret = malloc(sizeof(ReturnStatement));
+
+    require(p, T_RETURN);
+    ret->expression = parse_expression(p);
+
+    return ret;
+}
+
 Statement *parse_statement(Parser *p) {
     Statement *s = malloc(sizeof(Statement));
 
@@ -754,11 +897,10 @@ Statement *parse_statement(Parser *p) {
             break;
         case T_IDENT:
             {
-                TokenKind second = peekn(p, 1).kind;
-                if (second == T_LPAREN) {
+                if (peekn(p, 1).kind == T_LPAREN) {
                     s->kind = FUNCTION_CALL;
                     s->as.function_call = parse_function_call(p);
-                } else if (second == T_EQUALS) {
+                } else {
                     s->kind = ASSIGNMENT;
                     s->as.assignment = parse_assignment(p);
                 }
@@ -775,6 +917,14 @@ Statement *parse_statement(Parser *p) {
         case T_WHILE:
             s->kind = WHILE_STATEMENT;
             s->as.while_statement = parse_while_statement(p);
+            break;
+        case T_FN:
+            s->kind = FUNCTION;
+            s->as.function = parse_function(p);
+            break;
+        case T_RETURN:
+            s->kind = RETURN_STATEMENT;
+            s->as.return_statement = parse_return_statement(p);
             break;
         default:
             fprintf(stderr, "Expected statement but found %d\n", peek(p).kind);
@@ -924,6 +1074,8 @@ Token lex_token(Lexer *l) {
     if (strcmp(token, "extern") == 0) return (Token){T_EXTERN, {0}};
     if (strcmp(token, "if") == 0) return (Token){T_IF, {0}};
     if (strcmp(token, "while") == 0) return (Token){T_WHILE, {0}};
+    if (strcmp(token, "fn") == 0) return (Token){T_FN, {0}};
+    if (strcmp(token, "return") == 0) return (Token){T_RETURN, {0}};
 
     return (Token){T_IDENT, { .s = token }};
 }
@@ -980,15 +1132,17 @@ int main(int argc, char **argv) {
     size_t statement_count = parse(&p, program);
 
     char assembly[0x100000] = {0};
+    char back_assembly[0x100000] = {0};
     char *symbols[0x100];
     char *string_labels[0x100];
-    Emitter e = {assembly, assembly, symbols, 0, 0, string_labels, 0};
+    Emitter e = {assembly, assembly, back_assembly, back_assembly, symbols, 0, 0, string_labels, 0};
     emit(&e, program, statement_count);
 
     char *asm_filename = replace_ext(filename, ".asm");
 
     FILE *asm_fp = fopen(asm_filename, "w");
     fputs(assembly, asm_fp);
+    fputs(back_assembly, asm_fp);
     fclose(asm_fp);
 
     char *object_filename = replace_ext(filename, ".o");
