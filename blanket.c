@@ -610,6 +610,7 @@ Expression *parse_factor(Parser *p) {
         case T_INTLIT:
             expr->kind = EXPR_NUMBER;
             expr->as.number = t.value.l;
+            next(p);
             break;
         case T_IDENT:
             if (peekn(p, 1).kind == T_LPAREN) {
@@ -618,18 +619,19 @@ Expression *parse_factor(Parser *p) {
             } else {
                 expr->kind = EXPR_IDENT;
                 expr->as.ident = t.value.s;
+                next(p);
             }
             break;
         case T_STRLIT:
             expr->kind = EXPR_STRING;
             expr->as.string = t.value.s;
+            next(p);
             break;
         default:
             fprintf(stderr, "Unexpected token in factor\n");
             exit(1);
     }
 
-    next(p);
 
     return expr;
 }
