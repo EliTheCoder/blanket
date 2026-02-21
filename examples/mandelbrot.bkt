@@ -46,18 +46,13 @@ y = y*scale
 let x = 0 - 2
 x = x*scale
 
-let g = 1
-
 while y < 1*scale {
     x = 0 - 2
     x = x*scale
     while x < 1*scale {
-        g = 1
         if mandelbrot(scale, x, y) >= 0 {
             printf(" ")
-            g = 0
-        }
-        if g {
+        } else {
             printf("█")
         }
         x = x + 25

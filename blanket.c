@@ -108,8 +108,10 @@ typedef struct Function {
 
 typedef struct IfStatement {
     Expression *condition;
-    Statement **statements;
-    size_t statement_count;
+    Statement **body_statements;
+    size_t body_statement_count;
+    Statement **else_statements;
+    size_t else_statement_count;
 } IfStatement;
 
 typedef struct WhileStatement {
@@ -401,16 +403,23 @@ void emit_external(Emitter *e, External *external) {
 void emit_statements(Emitter *e, Statement **statements, size_t statement_count);
 
 void emit_if_statement(Emitter *e, IfStatement *if_statement) {
-    char *label = new_label(e);
+    char *end_label = new_label(e);
+    char *else_label = new_label(e);
 
     emit_expression(e, if_statement->condition);
     p(e, "pop rax");
     p(e, "test rax, rax");
-    p(e, "jz %s", label);
+    p(e, "jz %s", else_label);
 
-    emit_statements(e, if_statement->statements, if_statement->statement_count);
+    emit_statements(e, if_statement->body_statements, if_statement->body_statement_count);
 
-    p(e, "%s:", label);
+    p(e, "jmp %s", end_label);
+    p(e, "%s:", else_label);
+
+    if (if_statement->else_statements != NULL)
+        emit_statements(e, if_statement->else_statements, if_statement->else_statement_count);
+
+    p(e, "%s:", end_label);
 }
 
 void emit_while_statement(Emitter *e, WhileStatement *while_statement) {
@@ -559,6 +568,7 @@ typedef enum {
     T_COMMA,
     T_EXTERN,
     T_IF,
+    T_ELSE,
     T_WHILE,
     T_LCURLY,
     T_RCURLY,
@@ -803,6 +813,7 @@ FunctionCall *parse_function_call(Parser *p) {
 }
 
 size_t parse(Parser *p, Statement **program);
+Statement *parse_statement(Parser *p);
 
 IfStatement *parse_if_statement(Parser *p) {
     IfStatement *ifs = malloc(sizeof(IfStatement));
@@ -810,13 +821,33 @@ IfStatement *parse_if_statement(Parser *p) {
     require(p, T_IF);
     ifs->condition = parse_expression(p);
     require(p, T_LCURLY);
-    Statement **statements = malloc(sizeof(Statement*) * 100);
-    size_t statement_count = parse(p, statements);
+    Statement **body_statements = malloc(sizeof(Statement*) * 100);
+    size_t body_statement_count = parse(p, body_statements);
 
-    ifs->statements = statements;
-    ifs->statement_count = statement_count;
+    ifs->body_statements = body_statements;
+    ifs->body_statement_count = body_statement_count;
 
     require(p, T_RCURLY);
+
+    if (peek(p).kind == T_ELSE) {
+        require(p, T_ELSE);
+        if (peek(p).kind == T_IF) {
+            Statement **else_statements = malloc(sizeof(Statement*) * 1);
+
+            else_statements[0] = parse_statement(p);
+
+            ifs->else_statements = else_statements;
+            ifs->else_statement_count = 1;
+        } else {
+            require(p, T_LCURLY);
+            Statement **else_statements = malloc(sizeof(Statement*) * 100);
+            size_t else_statement_count = parse(p, else_statements);
+
+            ifs->else_statements = else_statements;
+            ifs->else_statement_count = else_statement_count;
+            require(p, T_RCURLY);
+        }
+    } else ifs->else_statements = NULL;
 
     return ifs;
 }
@@ -1083,6 +1114,7 @@ Token lex_token(Lexer *l) {
     if (strcmp(token, "let") == 0) return (Token){T_LET, {0}};
     if (strcmp(token, "extern") == 0) return (Token){T_EXTERN, {0}};
     if (strcmp(token, "if") == 0) return (Token){T_IF, {0}};
+    if (strcmp(token, "else") == 0) return (Token){T_ELSE, {0}};
     if (strcmp(token, "while") == 0) return (Token){T_WHILE, {0}};
     if (strcmp(token, "fn") == 0) return (Token){T_FN, {0}};
     if (strcmp(token, "return") == 0) return (Token){T_RETURN, {0}};
