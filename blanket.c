@@ -611,6 +611,7 @@ Token require(Parser *p, TokenKind token_kind) {
 }
 
 FunctionCall *parse_function_call(Parser *p);
+Expression *parse_expression(Parser *p);
 
 Expression *parse_factor(Parser *p) {
     Expression *expr = malloc(sizeof(Expression));
@@ -618,24 +619,30 @@ Expression *parse_factor(Parser *p) {
     Token t = peek(p);
     switch (t.kind) {
         case T_INTLIT:
+            next(p);
             expr->kind = EXPR_NUMBER;
             expr->as.number = t.value.l;
-            next(p);
             break;
         case T_IDENT:
             if (peekn(p, 1).kind == T_LPAREN) {
                 expr->kind = EXPR_FUNCTION_CALL;
                 expr->as.function_call = parse_function_call(p);
             } else {
+                next(p);
                 expr->kind = EXPR_IDENT;
                 expr->as.ident = t.value.s;
-                next(p);
             }
             break;
         case T_STRLIT:
+            next(p);
             expr->kind = EXPR_STRING;
             expr->as.string = t.value.s;
+            break;
+        case T_LPAREN:
             next(p);
+            free(expr);
+            expr = parse_expression(p);
+            require(p, T_RPAREN);
             break;
         default:
             fprintf(stderr, "Unexpected token in factor\n");

@@ -1,8 +1,7 @@
 extern printf
 
 fn complex_square_a(scale, a, b) {
-    let t = a*a - b*b
-    return t/scale
+    return (a*a - b*b)/scale
 }
 fn complex_square_b(scale, a, b) {
     return 2*a*b/scale
@@ -41,14 +40,11 @@ fn mandelbrot(scale, a, b) {
 
 let scale = 7000
 
-let y = 0 - 1
-y = y*scale
-let x = 0 - 2
-x = x*scale
+let y = (0 - 1)*scale
+let x = (0 - 2)*scale
 
 while y < 1*scale {
-    x = 0 - 2
-    x = x*scale
+    x = (0 - 2)*scale
     while x < 1*scale {
         if mandelbrot(scale, x, y) >= 0 {
             printf(" ")
