@@ -1,3 +1,4 @@
 *
 !blanket.c
 !examples/*.bkt
+!Makefile
