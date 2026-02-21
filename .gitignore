@@ -1,1 +1,3 @@
-blanket
+*
+!blanket.c
+!examples/*.bkt
