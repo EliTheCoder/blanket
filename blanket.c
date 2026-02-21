@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+const char * const call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+
 typedef enum {
     EXPR_NUMBER,
     EXPR_STRING,
@@ -223,8 +225,6 @@ void emit_expression(Emitter *e, Expression *expression) {
             }
         case EXPR_FUNCTION_CALL:
             {
-                const char *call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
-
                 for (size_t i = 0; i < expression->as.function_call->argument_count; i++) {
                     emit_expression(e, expression->as.function_call->arguments[i]);
                 }
@@ -383,8 +383,6 @@ void emit_assignment(Emitter *e, Assignment *assignment) {
 }
 
 void emit_function_call(Emitter *e, FunctionCall *function_call) {
-    const char *call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
-
     for (size_t i = 0; i < function_call->argument_count; i++) {
         emit_expression(e, function_call->arguments[i]);
     }
@@ -439,8 +437,6 @@ void emit_while_statement(Emitter *e, WhileStatement *while_statement) {
 }
 
 void emit_function(Emitter *e, Function *function) {
-    const char *call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
-
     p_back(e, "%s:", function->name);
     p_back(e, "push rbp");
     p_back(e, "mov rbp, rsp");
