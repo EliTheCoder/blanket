@@ -210,6 +210,8 @@ void push_symbol(Emitter *e, char *symbol) {
     e->symbols[e->symbol_count++] = symbol;
 }
 
+void emit_function_call(Emitter *e, FunctionCall *function_call);
+
 void emit_expression(Emitter *e, Expression *expression) {
     switch (expression->kind) {
         case EXPR_NUMBER:
@@ -233,15 +235,7 @@ void emit_expression(Emitter *e, Expression *expression) {
             }
         case EXPR_FUNCTION_CALL:
             {
-                for (size_t i = 0; i < expression->as.function_call->argument_count; i++) {
-                    emit_expression(e, expression->as.function_call->arguments[i]);
-                }
-                for (int i = expression->as.function_call->argument_count - 1; i >= 0; i--) {
-                    p(e, "pop %s", call_registers[i]);
-                }
-
-                p(e, "xor rax, rax");
-                p(e, "call %s", expression->as.function_call->name);
+                emit_function_call(e, expression->as.function_call);
                 p(e, "push rax");
                 break;
             }
