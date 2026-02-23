@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <stdbool.h>
 #include <sys/wait.h>
 
 const char * const call_registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
@@ -26,6 +27,8 @@ typedef enum {
     EXPR_EQ,
     EXPR_NEQ,
     EXPR_FUNCTION_CALL,
+    EXPR_DEREF,
+    EXPR_REF,
 } ExpressionKind;
 
 typedef struct FunctionCall FunctionCall;
@@ -39,6 +42,7 @@ typedef struct Expression {
         char *ident;
         char *string;
         FunctionCall *function_call;
+        struct Expression *unop;
         struct {
             struct Expression *left;
             struct Expression *right;
@@ -52,7 +56,11 @@ typedef struct {
 } Declaration;
 
 typedef struct {
-    char *name;
+    union {
+        char *name;
+        Expression *address;
+    } as;
+    bool dereference;
     Expression *expression;
 } Assignment;
 
@@ -220,7 +228,7 @@ void emit_expression(Emitter *e, Expression *expression) {
                     fprintf(stderr, "Undeclared symbol %s\n", expression->as.ident);
                     exit(1);
                 }
-                p(e, "push [rbp-%d]", get_symbol(e, expression->as.ident));
+                p(e, "push [rbp-%d]", symbol_offset);
                 break;
             }
         case EXPR_FUNCTION_CALL:
@@ -234,6 +242,22 @@ void emit_expression(Emitter *e, Expression *expression) {
 
                 p(e, "xor rax, rax");
                 p(e, "call %s", expression->as.function_call->name);
+                p(e, "push rax");
+                break;
+            }
+        case EXPR_DEREF:
+            emit_expression(e, expression->as.unop);
+            p(e, "pop rax");
+            p(e, "push [rax]");
+            break;
+        case EXPR_REF:
+            {
+                int symbol_offset = get_symbol(e, expression->as.ident);
+                if (symbol_offset < 0) {
+                    fprintf(stderr, "Undeclared symbol %s\n", expression->as.ident);
+                    exit(1);
+                }
+                p(e, "lea rax, [rbp-%d]", symbol_offset);
                 p(e, "push rax");
                 break;
             }
@@ -371,15 +395,21 @@ void emit_declaration(Emitter *e, Declaration *declaration) {
 
 void emit_assignment(Emitter *e, Assignment *assignment) {
     emit_expression(e, assignment->expression);
-    p(e, "pop rax");
 
-    int symbol_offset = get_symbol(e, assignment->name);
-    if (symbol_offset < 0) {
-        fprintf(stderr, "Undeclared symbol %s\n", assignment->name);
-        exit(1);
+    if (assignment->dereference) {
+        emit_expression(e, assignment->as.address);
+        p(e, "pop rbx");
+        p(e, "pop rax");
+        p(e, "mov [rbx], rax");
+    } else {
+        int symbol_offset = get_symbol(e, assignment->as.name);
+        if (symbol_offset < 0) {
+            fprintf(stderr, "Undeclared symbol %s\n", assignment->as.name);
+            exit(1);
+        }
+        p(e, "pop rax");
+        p(e, "mov [rbp-%d], rax", symbol_offset);
     }
-
-    p(e, "mov [rbp-%d], rax", symbol_offset);
 }
 
 void emit_function_call(Emitter *e, FunctionCall *function_call) {
@@ -570,6 +600,7 @@ typedef enum {
     T_RCURLY,
     T_FN,
     T_RETURN,
+    T_CARET,
 } TokenKind;
 
 typedef struct {
@@ -643,6 +674,17 @@ Expression *parse_factor(Parser *p) {
             free(expr);
             expr = parse_expression(p);
             require(p, T_RPAREN);
+            break;
+        case T_CARET:
+            next(p);
+            expr->kind = EXPR_DEREF;
+            expr->as.unop = parse_factor(p);
+            break;
+        case T_STAR:
+            next(p);
+            Token t = require(p, T_IDENT);
+            expr->kind = EXPR_REF;
+            expr->as.ident = t.value.s;
             break;
         default:
             fprintf(stderr, "Unexpected token in factor\n");
@@ -783,10 +825,19 @@ Declaration *parse_declaration(Parser *p) {
 Assignment *parse_assignment(Parser *p) {
     Assignment *ass = malloc(sizeof(Assignment));
 
-    Token name = require(p, T_IDENT);
-    require(p, T_EQUALS);
-    ass->name = name.value.s;
-    ass->expression = parse_expression(p);
+    if (peek(p).kind == T_CARET) {
+        next(p);
+        ass->as.address = parse_factor(p);
+        require(p, T_EQUALS);
+        ass->expression = parse_expression(p);
+        ass->dereference = true;
+    } else {
+        Token name = require(p, T_IDENT);
+        ass->as.name = name.value.s;
+        require(p, T_EQUALS);
+        ass->expression = parse_expression(p);
+        ass->dereference = false;
+    }
 
     return ass;
 }
@@ -1016,6 +1067,7 @@ Token lex_token(Lexer *l) {
     if (c == '+') return (Token){T_PLUS, {0}};
     if (c == '-') return (Token){T_MINUS, {0}};
     if (c == '*') return (Token){T_STAR, {0}};
+    if (c == '^') return (Token){T_CARET, {0}};
     if (c == '/') return (Token){T_SLASH, {0}};
     if (c == '%') return (Token){T_PERCENT, {0}};
     if (c == ';') return (Token){T_SEMICOLON, {0}};
